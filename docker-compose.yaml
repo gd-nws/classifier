@@ -1,0 +1,11 @@
+version: '2'
+
+services:
+  analyser:
+    build: .
+    environment:
+      DATABASE: ${DATABASE}
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: ${DB_HOST}

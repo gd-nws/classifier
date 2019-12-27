@@ -13,7 +13,6 @@ from datetime import datetime
 from json import JSONEncoder
 import os
 import time
-import dotenv
 import pickle
 import string
 import pandas as pd
@@ -175,7 +174,7 @@ def get_headlines(url):
     """
     headlines = []
 
-    url += dotenv.get('NEWS_API_KEY', 'no-key')
+    url += os.environ['NEWS_API_KEY']
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
     response = urllib.request.urlopen(req).read().decode('utf8')
     r = json.loads(response)
@@ -442,14 +441,11 @@ def predict_class(all_headlines):
 
 
 raw_headlines = []
-fn = os.path.join(os.path.dirname(__file__), '.env')
-dotenv.load(fn)
-
-key = dotenv.get('NEWS_API_KEY', 'no key')
-database = dotenv.get('DATABASE', 'no database')
-db_user = dotenv.get('DB_USER', 'no user')
-db_password = dotenv.get('DB_PASSWORD', 'no password')
-db_host = dotenv.get('DB_HOST', 'no host')
+key = os.environ['NEWS_API_KEY']
+database = os.environ['DATABASE']
+db_user = os.environ['DB_USER']
+db_password = os.environ['DB_PASSWORD']
+db_host = os.environ['DB_HOST']
 
 urls = \
     [

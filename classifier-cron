@@ -1,0 +1,2 @@
+0 */3 * * * /app/start.sh
+# An empty line is required at the end of this file for a valid cron file.
