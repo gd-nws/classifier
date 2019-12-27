@@ -6,7 +6,7 @@ RUN mkdir -p /app
 WORKDIR /app
 
 COPY ./start.sh /app/start.sh
-RUN pip3 install pandas pymysql nltk vaderSentiment requests
+RUN pip3 install pandas pymysql nltk vaderSentiment requests sklearn
 RUN python3 -m nltk.downloader stopwords
 
 COPY ./classifiers/ /app/classifiers/

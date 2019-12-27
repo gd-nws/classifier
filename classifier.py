@@ -7,11 +7,9 @@
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import make_scorer
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
-# from sklearn.grid_search import GridSearchCV
 from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
@@ -215,15 +213,6 @@ def init_classifiers():
     classifiers = \
         [
             SVC(C=0.1, verbose=False, kernel='rbf', probability=True),
-            MLPClassifier(activation='tanh', alpha=1e-05, batch_size='auto',
-                          beta_1=0.9, beta_2=0.999, early_stopping=True,
-                          epsilon=1e-08, hidden_layer_sizes=(100, 500, 20, 10, 5, 2),
-                          learning_rate='constant',
-                          learning_rate_init=0.001, max_iter=2000, momentum=0.9,
-                          nesterovs_momentum=True, power_t=0.5, random_state=1, shuffle=True,
-                          solver='lbfgs', tol=0.0001, validation_fraction=0.1, verbose=False,
-                          warm_start=False
-                          ),
             RandomForestClassifier(n_estimators=20, max_features='sqrt', verbose=False),
             KNeighborsClassifier(n_neighbors=20, algorithm='auto', metric='euclidean', weights='uniform')
         ]
@@ -419,7 +408,7 @@ def cross_val_classifiers(classifiers, df):
 
         print(score_string)
 
-        # print(confusion)
+        print(confusion)
 
         i += 1
 
@@ -476,9 +465,6 @@ df['headline'] = df['headline'].map(lambda x: filter_stop_words(x))
 
 df['published_at'] = df['published_at'].map(lambda x: to_epoch(x))
 
-df = normalise_column('semantic_value')
-df = normalise_column('pos')
-df = normalise_column('neu')
 df = normalise_column('published_at')
 df = df.drop(['positive', 'negative'], axis=1)
 

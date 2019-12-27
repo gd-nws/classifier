@@ -417,9 +417,6 @@ def predict_class(all_headlines):
     df['headline'] = df['headline'].map(lambda x: filter_stop_words(x))
     df['published_at'] = df['published_at'].map(lambda x: to_epoch(x))
 
-    df = normalise_column(df, 'semantic_value')
-    df = normalise_column(df, 'pos')
-    df = normalise_column(df, 'neu')
     df = normalise_column(df, 'published_at')
 
     tr_counts = v.transform(df['headline'])
@@ -434,8 +431,6 @@ def predict_class(all_headlines):
     for h in all_headlines:
         h.predicted_class = df['predicted_class'].loc[i]
         i += 1
-
-    print(all_headlines)
 
     return all_headlines
 
