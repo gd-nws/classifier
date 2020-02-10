@@ -1,166 +1,62 @@
-# AUTHOR:       Daniel Welsh
-# CREATED:      15/01/2017
 # DESCRIPTION:
-#               A python script that pulls headlines from popular news sites using the
-#               NewsAPI (http://www.newsapi.org) api and performs semantic analysis
-#               with vaderSentiment to show the most positive and most negative
-#               headlines at the current time.
+#               Pull headlines from NewsAPI, and classify them as positive or negative.
+#               Headlines can be printed or persited.
 
+from common import connect_to_db, normalise_column, to_epoch
+from headline import Headline
+
+import sys
 import hashlib
 import json
 import urllib.request
-from datetime import datetime
 from json import JSONEncoder
 import os
 import time
+from datetime import datetime
 import pickle
 import string
 import pandas as pd
-import pymysql
 from nltk.corpus import stopwords
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import urllib.parse
-
-pymysql.install_as_MySQLdb()
-import MySQLdb
+from psycopg2.extras import execute_values
 
 s = set(stopwords.words('english'))
 
 
-class MyEncoder(JSONEncoder):
-    def default(self, o):
-        return o.__dict__
-
-
-def isclose(a, b, rel_tol=1e-09, abs_tol=0.0):
-    return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
-
-
-class Headline(object):
-    headline = ""
-    link = ""
-    semantic_value = 0.0
-    origin = ""
-    datetime = ""
-    neg = 0.0
-    pos = 0.0
-    neu = 0.0
-    predicted_class = 0
-    display_image = ""
-
-    def __str__(self, *args, **kwargs):
-        return "{: <120} {: <20} {: <10} {: <25} {: <180} {: <25} {: <180}".format(self.headline, str(self.predicted_class),
-                                                                          str(
-                                                                              self.semantic_value), self.origin,
-                                                                          self.link, str(self.datetime), self.display_image or "")
-
-    def __hash__(self, *args, **kwargs):
-
-        string = "{: <120} {: <10} {: <25} {: <180} {: <10} {: <10} {: <10}".format(self.headline,
-                                                                                    str(
-                                                                                        self.semantic_value),
-                                                                                    self.origin, self.link,
-                                                                                    str(self.pos), str(
-                                                                                        self.neg),
-                                                                                    str(self.neu))
-
-        return hash(string)
-
-    def sha256(self):
-        string = "{: <120} {: <10} {: <25} {: <180} {: <10} {: <10} {: <10}".format(self.headline,
-                                                                                    str(
-                                                                                        self.semantic_value),
-                                                                                    self.origin, self.link,
-                                                                                    str(self.pos), str(
-                                                                                        self.neg),
-                                                                                    str(self.neu))
-
-        hash_object = hashlib.sha256(bytes(string, 'utf-8'))
-        hex_dig = hash_object.hexdigest()
-
-        return hex_dig
-
-    # FROM: http://stackoverflow.com/questions/3768895/how-to-make-a-class-json-serializable
-    def default(self, o):
-        try:
-            iterable = iter(o)
-        except TypeError:
-            pass
-        else:
-            return list(iterable)
-        # Let the base class default method raise the TypeError
-        return json.JSONEncoder.default(self, o)
-
-    def to_array(self):
-        return [self.headline, self.origin, self.semantic_value, self.pos, self.neg, self.neu, self.datetime]
-
-    def __init__(self, headline, link, origin, datetime, display_image):
-        self.headline = headline
-        self.link = link
-        self.origin = origin
-        self.datetime = datetime
-        self.display_image = display_image
-
-
-def connect_to_db():
+def load_classifier(classifier):
     """
-    Creates a connection to a database.
+    Load a classifier from local storage.
 
-    :return: database, cursor
-    """
-    global db_host
-    global db_user
-    global db_password
-    global database
-    db = MySQLdb.connect(host=db_host, user=db_user,
-                         passwd=db_password, db=database, charset='utf8')
-    return db, db.cursor()
-
-
-def load_classifier():
-    """
-    Loads the most recent classifier from file with the highest f1 score.
-
+    :param classifier: String name of classifier.
     :return: classifier, vectorizer
     """
-
-    sql = "SELECT * FROM classifier_scores ORDER BY date_added DESC LIMIT 4"
-    db, cur = connect_to_db()
-
-    rows = pd.read_sql(sql, db)
-    db.close()
-
-    id = rows['f1'].idxmax()
-    classifier_inf = rows.iloc[id].values
-
     fn = os.path.join(os.path.dirname(__file__),
-                      'classifiers/' + classifier_inf[1] + '.clf')
+                      'classifiers/{classifier}.clf'.format(classifier=classifier))
     classifier = pickle.load(open(fn, 'rb'))
+
     fn = os.path.join(os.path.dirname(__file__), 'classifiers/vectorizer.vc')
     vectorizer = pickle.load(open(fn, 'rb'))
 
     return classifier, vectorizer
 
 
-def analyze_headlines(blocks):
+def analyze_headlines(headlines):
     """
     Performs semantic analysis on the headline and saves as Headline data-type
 
-    :param blocks: array of Headlines
-    :return: array of headlines, array items = [headline, link, origin, and date published]
+    :param headlines: array of Headlines
+    :return: array of headlines
     """
     analyzer = SentimentIntensityAnalyzer()
-    headlines = []
 
-    for block in blocks:
-        vs = analyzer.polarity_scores(block.headline)
+    for headline in headlines:
+        vs = analyzer.polarity_scores(headline.headline)
 
-        block.semantic_value = vs['compound']
-        block.pos = vs['pos']
-        block.neg = vs['neg']
-        block.neu = vs['neu']
-
-        headlines.append(block)
+        headline.semantic_value = vs['compound']
+        headline.pos = vs['pos']
+        headline.neg = vs['neg']
+        headline.neu = vs['neu']
 
     return headlines
 
@@ -170,12 +66,11 @@ def get_headlines(url):
     Gets headlines from http://www.newsapi.org
 
     :param url: url
-    :return: array of headlines, array items = [headline, link, origin, and date published]
+    :return: array of headlines
     """
     headlines = []
 
-    url += os.environ['NEWS_API_KEY']
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    req = urllib.request.Request(url)
     response = urllib.request.urlopen(req).read().decode('utf8')
     r = json.loads(response)
 
@@ -189,9 +84,8 @@ def get_headlines(url):
             published_at = "" + str(re['publishedAt']).split('T')[0]
             prev_published_at = published_at
 
-        h_url = urllib.parse.urlparse(re['url'])
-        u = h_url.scheme + '://' + h_url.netloc + h_url.path
-        h = Headline(re['title'].split('\n')[0], u, re['source']['id'] or re['source']['name'], published_at, re['urlToImage'])
+        h = Headline(re['title'].split('\n')[0], re['url'], re['source']['id']
+                     or re['source']['name'], published_at, re['urlToImage'])
         headlines.append(h)
 
     return headlines
@@ -204,76 +98,32 @@ def save_to_db(headlines):
     :param headlines: all headlines
     :return: null
     """
-    db = MySQLdb.connect(host=db_host, user=db_user, passwd=db_password, db=database,
-                         charset='utf8')  # name of the data base
-
+    db = connect_to_db()
     cur = db.cursor()
-    cur.execute('SET NAMES utf8;')
-    cur.execute('SET CHARACTER SET utf8;')
-    cur.execute('SET character_set_connection=utf8;')
 
-    sql = "INSERT INTO headlines (headline, predicted_class, link, origin, semantic_value, hashcode, published_at, pos, neg, neu, display_image) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    insert_vals = []
+
+    sql = """
+        INSERT INTO headlines 
+            (headline, predicted_class, link, origin, semantic_value, hashcode, published_at, pos, neg, neu, display_image) 
+        VALUES %s
+        ON CONFLICT DO NOTHING
+        RETURNING id
+    """
+
     for h in headlines:
-        print("Added Headline:\t" + h.sha256())
-        try:
-            cur.execute(sql,
-                        (h.headline, int(h.predicted_class), h.link, h.origin, h.semantic_value, h.sha256(), h.datetime,
-                         h.pos, h.neg, h.neu, h.display_image))
-        except pymysql.err.IntegrityError as e:
-            print("ERROR: {}".format(e))
-            continue
-        db.commit()
+        insert_vals.append((h.headline, int(h.predicted_class), h.link, h.origin, h.semantic_value, h.sha256(), h.datetime,
+                            h.pos, h.neg, h.neu, h.display_image))
 
+    inserted = []
+    try:
+        inserted = execute_values(cur, sql, insert_vals, fetch=True)
+    except Exception as e:
+        print("ERROR: {}".format(e))
+
+    print("Stored {count} headline(s)".format(count=len(inserted)))
+    db.commit()
     db.close()
-
-
-def print_to_file(headlines):
-    """
-    Write all headlines to file.
-
-    :param headlines: all headlines
-    :return: null
-    """
-    f = open('headlines.txt', 'w')
-
-    f.write("{:-<359}".format('-') + '\n')
-    f.write("{: <120} {: <10} {: <25} {: <180} {: <25}".format('Headline', 'Semantic', 'Origin', 'Link',
-                                                               'Date-Time') + '\n')
-    f.write("{:-<359}".format('-') + '\n')
-
-    i = 0
-    idx = 0
-    l_idx = 0
-    highest = 0.0
-    lowest = 0.0
-    cumulative_sentiment = 0.0
-    for h in headlines:
-        f.write(str(h) + '\n')
-
-        if float(h.semantic_value) > highest:
-            highest = float(h.semantic_value)
-            idx = i
-
-        if lowest > float(h.semantic_value):
-            lowest = float(h.semantic_value)
-            l_idx = i
-
-        cumulative_sentiment += float(h.semantic_value)
-
-        i += 1
-
-    f.write('\n')
-
-    f.write("{:-<359}".format('-') + '\n')
-
-    f.write('Total headlines analysed: ' + str(len(headlines)) + '\n')
-    f.write('Cumulative Sentiment:     ' + str(cumulative_sentiment) + '\n')
-
-    f.write('\nThe most positive article of the day is:' + '\n')
-    f.write(str(headlines[idx]) + '\n')
-
-    f.write('\nThe most negative article of the day is:' + '\n')
-    f.write(str(headlines[l_idx]) + '\n')
 
 
 def print_results(headlines):
@@ -324,37 +174,6 @@ def print_results(headlines):
     print(str(headlines[l_idx]))
 
 
-def to_epoch(date_time):
-    """
-    Convert datetime to epoch
-
-    :param date_time: datetime
-    :return: epoch
-    """
-    pattern = '%Y-%m-%d'
-    epoch = int(time.mktime(time.strptime(str(date_time), pattern)))
-    return epoch
-
-
-def normalise_column(df, column):
-    """
-    Normalise a column of floats
-
-    :param column: column name
-    :return: dataframe with update column
-    """
-
-    max_c = df[column].max()
-    min_c = df[column].min()
-
-    if max_c == min_c:
-        df[column] = df[column].apply(lambda x: 0)
-    else:
-        df[column] = df[column].apply(lambda x: float((x - min_c)) / float((max_c - min_c)))
-
-    return df
-
-
 def filter_stop_words(headline):
     """
     Filter all stop words from a string to reduce headline size.
@@ -393,8 +212,7 @@ def predict_class(all_headlines):
     :param all_headlines: all headlines
     :return: headlines with predictions
     """
-
-    clf, v = load_classifier()
+    clf, v = load_classifier("SVM")
 
     headlines = []
     for h in all_headlines:
@@ -435,26 +253,29 @@ def predict_class(all_headlines):
     return all_headlines
 
 
-raw_headlines = []
-key = os.environ['NEWS_API_KEY']
-database = os.environ['DATABASE']
-db_user = os.environ['DB_USER']
-db_password = os.environ['DB_PASSWORD']
-db_host = os.environ['DB_HOST']
+def main():
+    raw_headlines = []
+    key = os.environ['NEWS_API_KEY']
 
-urls = \
-    [
-        'https://newsapi.org/v2/top-headlines?country=gb&apiKey=',
-        'https://newsapi.org/v2/top-headlines?country=us&apiKey='
+    countries = [
+        "gb",
+        "us"
     ]
 
-for url in urls:
-    lines = get_headlines(url)
-    raw_headlines.extend(lines)
+    for country in countries:
+        lines = get_headlines(
+            'https://newsapi.org/v2/top-headlines?country={country}&apiKey={api_key}'.format(api_key=key, country=country))
+        raw_headlines.extend(lines)
 
-all_headlines = analyze_headlines(raw_headlines)
+    all_headlines = analyze_headlines(raw_headlines)
+    all_headlines = predict_class(all_headlines)
 
-all_headlines = predict_class(all_headlines)
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--persist":
+            save_to_db(all_headlines)
+        elif sys.argv[1] == "--print":
+            print_results(all_headlines)
 
-print_results(all_headlines)
-save_to_db(all_headlines)
+
+if __name__ == "__main__":
+    main()

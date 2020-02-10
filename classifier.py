@@ -1,6 +1,3 @@
-# AUTHOR: Daniel
-# Welsh, d.welsh @ ncl.ac.uk
-# DATE: 27 / 02 / 2017
 # DESCRIPTION:
 # - Script to train a classifier from annotated headline data, to then predict sentiment of future classifiers.
 
@@ -15,20 +12,13 @@ from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
 import csv
 import numpy as np
-import dotenv
 import time
-import pymysql
 import pandas as pd
 import string
 import pickle
 from nltk.corpus import stopwords
 import os
-
-# import warnings
-# warnings.filterwarnings("ignore")
-
-pymysql.install_as_MySQLdb()
-import MySQLdb
+from common import connect_to_db
 
 s = set(stopwords.words('english'))
 c_name = ['SVM', 'MLP', 'RFR', 'KNN']
@@ -54,15 +44,8 @@ c_name = ['SVM', 'MLP', 'RFR', 'KNN']
 # GET DATA
 # ***********************************************************************************************************************
 
-fn = os.path.join(os.path.dirname(__file__), '.env')
-dotenv.load(fn)
-database = dotenv.get('DATABASE', 'no database')
-db_user = dotenv.get('DB_USER', 'no user')
-db_password = dotenv.get('DB_PASSWORD', 'no password')
-db_host = dotenv.get('DB_HOST', 'no host')
 
-
-def get_data(db, cur):
+def get_data(db):
     """
     Gets all annotated headlines from the server.
 
@@ -70,9 +53,6 @@ def get_data(db, cur):
     :param cur: cursor
     :return: pandas dataframe of annotated headline data.
     """
-    cur.execute('SET NAMES utf8;')
-    cur.execute('SET CHARACTER SET utf8;')
-    cur.execute('SET character_set_connection=utf8;')
 
     sql = """
         SELECT annotations.id, headline, origin, semantic_value, pos, neg, neu, published_at, positive, negative
@@ -80,6 +60,7 @@ def get_data(db, cur):
         LEFT JOIN headlines
         ON headlines.id = annotations.id
     """
+    cur = db.cursor()
     cur.execute(sql)
 
     df = pd.read_sql(sql, con=db)
@@ -93,20 +74,6 @@ def get_data(db, cur):
     df['truth'] = df['truth'].map(lambda x: 1 if x > 0 else 0)
 
     return df
-
-
-def connect_to_db():
-    """
-    Connect to a database.
-
-    :return: database and cursor
-    """
-    global db_host
-    global db_user
-    global db_password
-    global database
-    db = MySQLdb.connect(host=db_host, user=db_user, passwd=db_password, db=database, charset='utf8')
-    return db, db.cursor()
 
 
 def filter_stop_words(headline):
@@ -197,7 +164,8 @@ def log_predictions(df, output, file_name):
     predictions_file = open(fn + file_name, "w")
     open_file_object = csv.writer(predictions_file)
     open_file_object.writerow(["ID", "Class", "Truth", "Headline"])
-    open_file_object.writerows(zip(df['id'], output, df["truth"], df['headline']))
+    open_file_object.writerows(
+        zip(df['id'], output, df["truth"], df['headline']))
     predictions_file.close()
 
 
@@ -213,8 +181,10 @@ def init_classifiers():
     classifiers = \
         [
             SVC(C=0.1, verbose=False, kernel='rbf', probability=True),
-            RandomForestClassifier(n_estimators=20, max_features='sqrt', verbose=False),
-            KNeighborsClassifier(n_neighbors=20, algorithm='auto', metric='euclidean', weights='uniform')
+            RandomForestClassifier(
+                n_estimators=20, max_features='sqrt', verbose=False),
+            KNeighborsClassifier(
+                n_neighbors=20, algorithm='auto', metric='euclidean', weights='uniform')
         ]
 
     return classifiers
@@ -238,7 +208,8 @@ def train_classifiers(df):
     df.join(tr)
 
     for clf in classifiers:
-        clf = clf.fit(df.drop(["headline", "origin", "truth", "id"], axis=1).values, df['truth'].values)
+        clf = clf.fit(df.drop(
+            ["headline", "origin", "truth", "id"], axis=1).values, df['truth'].values)
 
     return count_vectorizer
 
@@ -262,7 +233,8 @@ def make_prediction(vectorizer, data):
     # print test
 
     for clf in classifiers:
-        output = clf.predict(df.drop(["headline", "origin", "truth", "id"], axis=1)).astype(int)
+        output = clf.predict(
+            df.drop(["headline", "origin", "truth", "id"], axis=1)).astype(int)
         # log_predictions(data, output, c_name[i] + "_predictions.csv")
 
         i += 1
@@ -288,7 +260,7 @@ def optimise_parameters(classifiers, train):
                         # 'linear',
                         # 'poly',
                         'rbf'
-                    ]
+                ]
             },
             {
                 # 'solver': ["lbfgs", "sgd", "adam"],
@@ -334,15 +306,19 @@ def optimise_parameters(classifiers, train):
     print(train.drop(["headline", "origin", "truth"], axis=1))
 
     while i < len(classifiers):
-        grid = GridSearchCV(classifiers[i], param_grid=ps[i], cv=5, verbose=3, scoring=f1_scorer)
-        grid.fit(train.drop(["headline", "origin", "truth", "id"], axis=1).values, train['truth'].values)
+        grid = GridSearchCV(
+            classifiers[i], param_grid=ps[i], cv=5, verbose=3, scoring=f1_scorer)
+        grid.fit(train.drop(["headline", "origin", "truth",
+                             "id"], axis=1).values, train['truth'].values)
         scores = grid.grid_scores_
         best_parameters = grid.best_estimator_.get_params()
         param_list = ''
         for param_name in sorted(ps[i].keys()):
-            param_list += '\t%s: %r\n' % (param_name, best_parameters[param_name])
+            param_list += '\t%s: %r\n' % (param_name,
+                                          best_parameters[param_name])
 
-        b_params[i] = '%s\nBest score: %0.3f \nBest parameters set: %s' % (scores, grid.best_score_, param_list)
+        b_params[i] = '%s\nBest score: %0.3f \nBest parameters set: %s' % (
+            scores, grid.best_score_, param_list)
 
         i += 1
 
@@ -371,7 +347,7 @@ def cross_val_classifiers(classifiers, df):
                                                                     "Accuracy STD", "Average F1", "F1 STD")
     print(score_header)
 
-    db, cur = connect_to_db()
+    db = connect_to_db()
 
     for clf in classifiers:
         confusion = np.array([[0, 0], [0, 0]])
@@ -389,25 +365,29 @@ def cross_val_classifiers(classifiers, df):
             te = pd.DataFrame(te_counts.todense())
             test_df.join(te)
 
-            clf = clf.fit(train_df.drop(["headline", "origin", "truth", "id"], axis=1).values, train_df['truth'].values)
-            output = clf.predict(test_df.drop(["headline", "origin", "truth", "id"], axis=1).values).astype(int)
+            clf = clf.fit(train_df.drop(
+                ["headline", "origin", "truth", "id"], axis=1).values, train_df['truth'].values)
+            output = clf.predict(test_df.drop(
+                ["headline", "origin", "truth", "id"], axis=1).values).astype(int)
 
             accuracy = accuracy_score(output, df['truth'].iloc[test].values)
             f1 = f1_score(output, df['truth'].iloc[test].values)
             acc = np.append(acc, accuracy)
             f1s = np.append(f1s, f1)
-            confusion += confusion_matrix(df['truth'].iloc[test].values, output)
+            confusion += confusion_matrix(
+                df['truth'].iloc[test].values, output)
 
         score_string = "{: <25} {: <25} {: <25} {: <25} {: <25}".format(c_name[i], acc.mean(), acc.std(), f1s.mean(),
                                                                         f1s.std())
 
         sql = "INSERT INTO classifier_scores (name, accuracy, accuracy_std, f1, f1_std, data_size) VALUES (%s, %s, %s, %s, %s, %s)"
 
-        cur.execute(sql, (c_name[i], float(acc.mean()), float(acc.std()), float(f1s.mean()), float(f1s.std()), len(df)))
+        cursor = db.cursor()
+        cursor.execute(sql, (c_name[i], float(acc.mean()), float(
+            acc.std()), float(f1s.mean()), float(f1s.std()), len(df)))
         db.commit()
 
         print(score_string)
-
         print(confusion)
 
         i += 1
@@ -456,8 +436,8 @@ def load_vectorizer():
     return pickle.load(open(fn + "vectorizer.vc", "rb"))
 
 
-db, cur = connect_to_db()
-df = get_data(db, cur)
+db = connect_to_db()
+df = get_data(db)
 
 df['headline'] = df['headline'].map(lambda x: strip_punctuation(x))
 df['headline'] = df['headline'].map(lambda x: x.lower())
