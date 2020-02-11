@@ -1,27 +1,20 @@
 # DESCRIPTION:
 #               Pull headlines from NewsAPI, and classify them as positive or negative.
-#               Headlines can be printed or persited.
+#               Headlines can be printed or persisted.
 
-from common import connect_to_db, normalise_column, to_epoch
+from common import connect_to_db, normalise_column, to_epoch, load_file, filter_stop_words
 from headline import Headline
 
 import sys
-import hashlib
 import json
 import urllib.request
-from json import JSONEncoder
 import os
-import time
 from datetime import datetime
-import pickle
 import string
 import pandas as pd
-from nltk.corpus import stopwords
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import urllib.parse
 from psycopg2.extras import execute_values
-
-s = set(stopwords.words('english'))
 
 
 def load_classifier(classifier):
@@ -31,12 +24,11 @@ def load_classifier(classifier):
     :param classifier: String name of classifier.
     :return: classifier, vectorizer
     """
-    fn = os.path.join(os.path.dirname(__file__),
-                      'classifiers/{classifier}.clf'.format(classifier=classifier))
-    classifier = pickle.load(open(fn, 'rb'))
+    classifier = load_file(
+        'classifiers/{classifier}.clf'.format(classifier=classifier))
 
-    fn = os.path.join(os.path.dirname(__file__), 'classifiers/vectorizer.vc')
-    vectorizer = pickle.load(open(fn, 'rb'))
+    vectorizer = load_file(
+        'classifiers/vectorizer.vc')
 
     return classifier, vectorizer
 
@@ -105,15 +97,27 @@ def save_to_db(headlines):
 
     sql = """
         INSERT INTO headlines 
-            (headline, predicted_class, link, origin, semantic_value, hashcode, published_at, pos, neg, neu, display_image) 
+            (
+                headline, 
+                predicted_class, 
+                link, origin, 
+                semantic_value, 
+                hashcode, 
+                published_at, 
+                pos, 
+                neg, 
+                neu, 
+                display_image
+            ) 
         VALUES %s
         ON CONFLICT DO NOTHING
         RETURNING id
     """
 
     for h in headlines:
-        insert_vals.append((h.headline, int(h.predicted_class), h.link, h.origin, h.semantic_value, h.sha256(), h.datetime,
-                            h.pos, h.neg, h.neu, h.display_image))
+        insert_vals.append(
+            (h.headline, int(h.predicted_class), h.link, h.origin, h.semantic_value, h.sha256(), h.datetime,
+             h.pos, h.neg, h.neu, h.display_image))
 
     inserted = []
     try:
@@ -164,33 +168,16 @@ def print_results(headlines):
 
     print("{:-<359}".format('-'))
 
-    print('Total headlines analysed: ' + str(len(headlines)))
-    print('Cumulative Sentiment:     ' + str(cumulative_sentiment))
+    breakdown = """
+        Total headlines Analysed: {total}
+        Cumulative Sentiment: {cumulative}
+        
+        Most positive: {positive}
+        Most negative: {negative}
+    """.format(total=len(headlines), cumulative=cumulative_sentiment, positive=headlines[idx],
+               negative=headlines[l_idx])
 
-    print('\nThe most positive article of the day is:')
-    print(str(headlines[idx]))
-
-    print('\nThe most negative article of the day is:')
-    print(str(headlines[l_idx]))
-
-
-def filter_stop_words(headline):
-    """
-    Filter all stop words from a string to reduce headline size.
-
-    :param headline: full headline
-    :return: shortened headline
-    """
-    words = filter(lambda w: not w in s, headline.split())
-    line = ""
-    l = 0
-    for w in words:
-        if l < 20:
-            line += w + " "
-            l += 1
-        else:
-            return line.strip()
-    return line.strip()
+    print(breakdown)
 
 
 def strip_punctuation(headline):
@@ -264,7 +251,8 @@ def main():
 
     for country in countries:
         lines = get_headlines(
-            'https://newsapi.org/v2/top-headlines?country={country}&apiKey={api_key}'.format(api_key=key, country=country))
+            'https://newsapi.org/v2/top-headlines?country={country}&apiKey={api_key}'.format(api_key=key,
+                                                                                             country=country))
         raw_headlines.extend(lines)
 
     all_headlines = analyze_headlines(raw_headlines)
