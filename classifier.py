@@ -1,6 +1,3 @@
-# AUTHOR: Daniel
-# Welsh, d.welsh @ ncl.ac.uk
-# DATE: 27 / 02 / 2017
 # DESCRIPTION:
 # - Script to train a classifier from annotated headline data, to then predict sentiment of future classifiers.
 
@@ -10,80 +7,64 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, GridSearchCV
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import f1_score
-import csv
 import numpy as np
-import dotenv
 import time
-import pymysql
 import pandas as pd
-import string
 import pickle
-from nltk.corpus import stopwords
 import os
+from common import connect_to_db, load_file, filter_stop_words, strip_punctuation, normalise_column
+from datetime import datetime
 
-# import warnings
-# warnings.filterwarnings("ignore")
-
-pymysql.install_as_MySQLdb()
-import MySQLdb
-
-s = set(stopwords.words('english'))
-c_name = ['SVM', 'MLP', 'RFR', 'KNN']
-
-# Get data from DB...
-
-# Pre-process data.
-#     Strip common words
-#     Limit to 20 words - 6 letters each - 120 characters
-#     Convert to ascii string
-#     Normalize sentiment scores
-#     Map for origins
-#     Date to normalized integers
-
-# Train classifiers
-#     Grid search SVM params
-
-# Compare parameters
-
-# Save best model
-
-# ***********************************************************************************************************************
-# GET DATA
-# ***********************************************************************************************************************
-
-fn = os.path.join(os.path.dirname(__file__), '.env')
-dotenv.load(fn)
-database = dotenv.get('DATABASE', 'no database')
-db_user = dotenv.get('DB_USER', 'no user')
-db_password = dotenv.get('DB_PASSWORD', 'no password')
-db_host = dotenv.get('DB_HOST', 'no host')
+c_name = ['SVM', 'RFR', 'KNN']
 
 
-def get_data(db, cur):
+def fetch_data_set():
     """
     Gets all annotated headlines from the server.
 
-    :param db: database connection
-    :param cur: cursor
-    :return: pandas dataframe of annotated headline data.
+    :return: pandas data frame of annotated headline data.
     """
-    cur.execute('SET NAMES utf8;')
-    cur.execute('SET CHARACTER SET utf8;')
-    cur.execute('SET character_set_connection=utf8;')
 
     sql = """
-        SELECT annotations.id, headline, origin, semantic_value, pos, neg, neu, published_at, positive, negative
-        FROM annotations
-        LEFT JOIN headlines
-        ON headlines.id = annotations.id
+        SELECT h.id as headline_id,
+               headline,
+               origin,
+               semantic_value,
+               pos,
+               neg,
+               neu,
+               published_at,
+               votes.positive,
+               votes.negative
+        FROM headlines as h
+        JOIN (
+            SELECT sum(a.positive) AS positive,
+                   sum(a.negative) AS negative,
+                   a.headline_id
+            FROM annotations as a
+            GROUP BY a.headline_id
+        ) as votes
+           ON h.id = votes.headline_id
     """
+    db = connect_to_db()
+    cur = db.cursor()
     cur.execute(sql)
 
     df = pd.read_sql(sql, con=db)
     db.close()
+
+    return df
+
+
+def engineer_data_set(df):
+    # Remove all rows where headline id is null.
+    # Values are set to null when the auto increment value is
+    # missing, some bug with pandas and postgres?
+    df = df.dropna(subset=['headline_id'])
+    df = df.drop(['headline_id'], axis=1)
 
     # Get ground truth
     df['negative'] = df['negative'].map(lambda x: x * -1)
@@ -92,68 +73,16 @@ def get_data(db, cur):
     # Marks split annotations as negative, could have a third class.
     df['truth'] = df['truth'].map(lambda x: 1 if x > 0 else 0)
 
+    df['headline'] = df['headline'].map(lambda x: strip_punctuation(x))
+    df['headline'] = df['headline'].map(lambda x: x.lower())
+    df['headline'] = df['headline'].map(lambda x: filter_stop_words(x))
+
+    df['published_at'] = df['published_at'].map(lambda x: to_epoch(x))
+
+    df = normalise_column(df, 'published_at')
+    df = df.drop(['positive', 'negative'], axis=1)
+
     return df
-
-
-def connect_to_db():
-    """
-    Connect to a database.
-
-    :return: database and cursor
-    """
-    global db_host
-    global db_user
-    global db_password
-    global database
-    db = MySQLdb.connect(host=db_host, user=db_user, passwd=db_password, db=database, charset='utf8')
-    return db, db.cursor()
-
-
-def filter_stop_words(headline):
-    """
-    Filter all stop words from a string to reduce headline size.
-
-    :param headline: full headline
-    :return: shortened headline
-    """
-    words = filter(lambda w: not w in s, headline.split())
-    line = ""
-    l = 0
-    for w in words:
-        if l < 20:
-            line += w + " "
-            l += 1
-        else:
-            return line.strip()
-    return line.strip()
-
-
-def strip_punctuation(headline):
-    """
-    Remove all punctuation from a headline to return only the words.
-
-    :param headline: raw headline
-    :return: parsed headline
-    """
-    table = headline.maketrans({key: None for key in string.punctuation})
-    headline = headline.translate(table)
-    return headline
-
-
-def convert_to_ascii(word):
-    """
-    Convert a string into ascii representation
-    SOURCE: http://stackoverflow.com/questions/8452961/convert-string-to-ascii-value-python
-
-    :param word: Plaintext word
-    :return: Ascii representation
-    """
-
-    if word is None:
-        word = " "
-
-    word = ''.join(str(ord(c)) for c in word)
-    return word
 
 
 def to_epoch(date_time):
@@ -164,44 +93,19 @@ def to_epoch(date_time):
     :return: epoch
     """
     pattern = '%Y-%m-%d'
+    earliest = datetime(1970, 1, 1, 0, 0, 0, 0)
+
+    if date_time is None:
+        date_time = str(datetime.now()).split(" ")[0]
+
+    if time.strptime(str(date_time), pattern).tm_year < earliest.year:
+        date_time = str(earliest).split(" ")[0]
+
     epoch = int(time.mktime(time.strptime(str(date_time), pattern)))
     return epoch
 
 
-def normalise_column(column):
-    """
-    Normalise a column of floats
-
-    :param column: column name
-    :return: dataframe with update column
-    """
-    global df
-    max_c = df[column].max()
-    min_c = df[column].min()
-    df[column] = df[column].apply(lambda x: (x - min_c) / (max_c - min_c))
-
-    return df
-
-
-# Write predictions to file.
-def log_predictions(df, output, file_name):
-    """
-    log predictions to file.
-
-    :param output: predictions
-    :param ids: id of predicted headline
-    :param file_name: file name
-    :return: null
-    """
-    fn = os.path.join(os.path.dirname(__file__), './predictions/')
-    predictions_file = open(fn + file_name, "w")
-    open_file_object = csv.writer(predictions_file)
-    open_file_object.writerow(["ID", "Class", "Truth", "Headline"])
-    open_file_object.writerows(zip(df['id'], output, df["truth"], df['headline']))
-    predictions_file.close()
-
-
-def init_classifiers():
+def create_classifiers():
     """
     Initialise classifiers:
         SVC: Support vector machine
@@ -212,39 +116,39 @@ def init_classifiers():
     """
     classifiers = \
         [
-            SVC(C=0.1, verbose=False, kernel='rbf', probability=True),
-            RandomForestClassifier(n_estimators=20, max_features='sqrt', verbose=False),
-            KNeighborsClassifier(n_neighbors=20, algorithm='auto', metric='euclidean', weights='uniform')
+            SVC(C=512, verbose=False, kernel='rbf', probability=True),
+            RandomForestClassifier(
+                n_estimators=160, max_features='sqrt', verbose=False),
+            KNeighborsClassifier(
+                n_neighbors=170, algorithm='auto', metric='euclidean', weights='uniform')
         ]
 
     return classifiers
 
 
-def train_classifiers(df):
+def train_classifiers(data, classifiers):
     """
     Train classifiers
 
     :param classifiers: Array of classifiers
-    :param train: train data
-    :param truth: truth data
+    :param data: data set
     :return: trained classifiers
     """
-    global classifiers
-
     count_vectorizer = CountVectorizer()
-    tr_counts = count_vectorizer.fit_transform(df['headline'])
+    tr_counts = count_vectorizer.fit_transform(data['headline'])
 
     tr = pd.DataFrame(tr_counts.todense())
-    df.join(tr)
+    data.join(tr)
 
     for clf in classifiers:
-        clf = clf.fit(df.drop(["headline", "origin", "truth", "id"], axis=1).values, df['truth'].values)
+        clf = clf.fit(data.drop(
+            ["headline", "origin", "truth"], axis=1).values, data['truth'].values)
 
-    return count_vectorizer
+    return count_vectorizer, classifiers
 
 
 # Make a prediction on the test set
-def make_prediction(vectorizer, data):
+def make_prediction(vectorizer, classifiers, data):
     """
     Use classifiers to make a prediction.
 
@@ -253,19 +157,15 @@ def make_prediction(vectorizer, data):
     :return: list of classifiers
     """
 
-    tr_counts = vectorizer.transform(df['headline'])
+    tr_counts = vectorizer.transform(data['headline'])
 
     tr = pd.DataFrame(tr_counts.todense())
-    df.join(tr)
-
-    i = 0
-    # print test
+    data.join(tr)
 
     for clf in classifiers:
-        output = clf.predict(df.drop(["headline", "origin", "truth", "id"], axis=1)).astype(int)
-        # log_predictions(data, output, c_name[i] + "_predictions.csv")
+        output = clf.predict(
+            data.drop(["headline", "origin", "truth"], axis=1)).astype(int)
 
-        i += 1
     return classifiers
 
 
@@ -282,15 +182,28 @@ def optimise_parameters(classifiers, train):
         [
             {
                 # 'C': np.arange(15, 30, 0.5),
-                'C': [0.1, 0.5, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512],
+                'C': [
+                    0.1,
+                    0.5,
+                    1,
+                    2,
+                    4,
+                    8,
+                    16,
+                    32,
+                    64,
+                    128,
+                    256,
+                    512
+                ],
                 'kernel':
                     [
-                        # 'linear',
-                        # 'poly',
+                        'linear',
+                        'poly',
                         'rbf'
                     ]
             },
-            {
+            # {
                 # 'solver': ["lbfgs", "sgd", "adam"],
                 # "learning_rate": ["constant", "invscaling", "adaptive"],
                 # "activation": ["identity", "logistic", 'tanh', "relu"],
@@ -302,23 +215,18 @@ def optimise_parameters(classifiers, train):
                 #     (100, 50, 20, 10, 5, 2),
                 #     (10, 10, 10, 10, 10, 10, 10, 10, 10, 10)
                 # ]
-            },
+            # },
             {
                 'n_estimators': [
-                    10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
                     110, 120, 130, 140, 150, 160, 170, 180, 190,
-                    200, 210, 220, 230, 240, 250
                 ],
-                'max_features': ['auto', 'sqrt', 'log2', None]
             },
             {
                 'n_neighbors':
                     [
-                        3,
-                        5,
-                        8,
-                        10,
-                        20
+                        10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+                        110, 120, 130, 140, 150, 160, 170, 180, 190,
+                        200, 210, 220, 230, 240, 250
                     ],
                 'weights': ['uniform', 'distance'],
                 'algorithm': ['auto', 'ball_tree', 'kd_tree', 'brute'],
@@ -334,15 +242,18 @@ def optimise_parameters(classifiers, train):
     print(train.drop(["headline", "origin", "truth"], axis=1))
 
     while i < len(classifiers):
-        grid = GridSearchCV(classifiers[i], param_grid=ps[i], cv=5, verbose=3, scoring=f1_scorer)
-        grid.fit(train.drop(["headline", "origin", "truth", "id"], axis=1).values, train['truth'].values)
-        scores = grid.grid_scores_
+        grid = GridSearchCV(
+            classifiers[i], param_grid=ps[i], cv=5, verbose=3, scoring=f1_scorer)
+        grid.fit(train.drop(["headline", "origin", "truth"], axis=1).values, train['truth'].values)
+        scores = grid.best_score_
         best_parameters = grid.best_estimator_.get_params()
         param_list = ''
         for param_name in sorted(ps[i].keys()):
-            param_list += '\t%s: %r\n' % (param_name, best_parameters[param_name])
+            param_list += '\t%s: %r\n' % (param_name,
+                                          best_parameters[param_name])
 
-        b_params[i] = '%s\nBest score: %0.3f \nBest parameters set: %s' % (scores, grid.best_score_, param_list)
+        b_params[i] = '%s\nBest score: %0.3f \nBest parameters set: %s' % (
+            scores, grid.best_score_, param_list)
 
         i += 1
 
@@ -371,7 +282,7 @@ def cross_val_classifiers(classifiers, df):
                                                                     "Accuracy STD", "Average F1", "F1 STD")
     print(score_header)
 
-    db, cur = connect_to_db()
+    db = connect_to_db()
 
     for clf in classifiers:
         confusion = np.array([[0, 0], [0, 0]])
@@ -389,25 +300,34 @@ def cross_val_classifiers(classifiers, df):
             te = pd.DataFrame(te_counts.todense())
             test_df.join(te)
 
-            clf = clf.fit(train_df.drop(["headline", "origin", "truth", "id"], axis=1).values, train_df['truth'].values)
-            output = clf.predict(test_df.drop(["headline", "origin", "truth", "id"], axis=1).values).astype(int)
+            clf = clf.fit(train_df.drop(
+                ["headline", "origin", "truth"], axis=1).values, train_df['truth'].values)
+            output = clf.predict(test_df.drop(
+                ["headline", "origin", "truth"], axis=1).values).astype(int)
 
             accuracy = accuracy_score(output, df['truth'].iloc[test].values)
             f1 = f1_score(output, df['truth'].iloc[test].values)
             acc = np.append(acc, accuracy)
             f1s = np.append(f1s, f1)
-            confusion += confusion_matrix(df['truth'].iloc[test].values, output)
+            confusion += confusion_matrix(
+                df['truth'].iloc[test].values, output)
 
         score_string = "{: <25} {: <25} {: <25} {: <25} {: <25}".format(c_name[i], acc.mean(), acc.std(), f1s.mean(),
                                                                         f1s.std())
 
-        sql = "INSERT INTO classifier_scores (name, accuracy, accuracy_std, f1, f1_std, data_size) VALUES (%s, %s, %s, %s, %s, %s)"
+        sql = """
+            INSERT INTO classifier_scores 
+                (name, accuracy, accuracy_std, f1, f1_std, data_size) 
+            VALUES 
+                (%s, %s, %s, %s, %s, %s)
+        """
 
-        cur.execute(sql, (c_name[i], float(acc.mean()), float(acc.std()), float(f1s.mean()), float(f1s.std()), len(df)))
+        cursor = db.cursor()
+        cursor.execute(sql, (c_name[i], float(acc.mean()), float(
+            acc.std()), float(f1s.mean()), float(f1s.std()), len(df)))
         db.commit()
 
         print(score_string)
-
         print(confusion)
 
         i += 1
@@ -418,6 +338,9 @@ def cross_val_classifiers(classifiers, df):
 def save_classifiers(classifiers, vectorizer):
     """
     Pickle classifiers
+    :type classifiers: list
+    :param classifiers: Classifiers to save.
+    :param vectorizer: Vectorizer to save.
     :return: null
     """
 
@@ -436,13 +359,13 @@ def load_classifiers():
     :return: classifiers
     """
 
-    fn = os.path.join(os.path.dirname(__file__), './classifiers/')
-    clfs = []
-    for c in c_name:
-        clf = pickle.load(open(fn + c + ".clf", "rb"))
-        clfs.append(clf)
+    classifiers = []
+    for classifier_name in c_name:
+        classifier = load_file(
+            'classifiers/{classifier}.clf'.format(classifier=classifier_name))
+        classifiers.append(classifier)
 
-    return clfs
+    return classifiers
 
 
 def load_vectorizer():
@@ -452,36 +375,30 @@ def load_vectorizer():
     :return: vectorizer
     """
 
-    fn = os.path.join(os.path.dirname(__file__), './classifiers/')
-    return pickle.load(open(fn + "vectorizer.vc", "rb"))
+    return load_file('classifiers/vectorizer.vc')
 
 
-db, cur = connect_to_db()
-df = get_data(db, cur)
+def main():
+    df = fetch_data_set()
+    df = engineer_data_set(df)
 
-df['headline'] = df['headline'].map(lambda x: strip_punctuation(x))
-df['headline'] = df['headline'].map(lambda x: x.lower())
-df['headline'] = df['headline'].map(lambda x: filter_stop_words(x))
+    print("Collected {count} annotated headline(s)".format(count=len(df)))
 
-df['published_at'] = df['published_at'].map(lambda x: to_epoch(x))
+    classifiers = create_classifiers()
 
-df = normalise_column('published_at')
-df = df.drop(['positive', 'negative'], axis=1)
+    # Uncomment to optimise parameters of the classifiers
+    optimise_parameters(classifiers, df)
 
-print(len(df))
+    vectorizer, classifiers = train_classifiers(df, classifiers)
+    cross_val_classifiers(classifiers, df)
 
-classifiers = init_classifiers()
+    # save_classifiers(classifiers, v)
 
-# Uncomment to optimise parameters of the classifiers
-# optimise_parameters(classifiers, df)
-
-v = train_classifiers(df)
-cross_val_classifiers(classifiers, df)
+    # classifiers = load_classifiers()
+    # v = load_vectorizer()
+    #
+    # make_prediction(v, df)
 
 
-save_classifiers(classifiers, v)
-
-# classifiers = load_classifiers()
-# v = load_vectorizer()
-#
-# make_prediction(v, df)
+if __name__ == "__main__":
+    main()
