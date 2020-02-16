@@ -22,10 +22,11 @@ def connect_to_db():
     db_user = os.environ['DB_USER']
     db_password = os.environ['DB_PASSWORD']
     db_host = os.environ['DB_HOST']
+    db_port = os.environ['DB_PORT']
 
     conn = psycopg2.connect(
-        "dbname='{dbName}' user='{user}' host='{host}' password='{password}'"
-        .format(dbName=database, user=db_user, password=db_password, host=db_host))
+        "dbname='{dbName}' user='{user}' host='{host}' password='{password}' port='{port}'"
+        .format(dbName=database, user=db_user, password=db_password, host=db_host, port=db_port))
 
     return conn
 

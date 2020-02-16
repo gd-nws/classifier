@@ -96,7 +96,7 @@ def save_to_db(headlines):
     insert_vals = []
 
     sql = """
-        INSERT INTO headlines 
+        INSERT INTO good_news.headlines 
             (
                 headline, 
                 predicted_class, 
