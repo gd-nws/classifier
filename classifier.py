@@ -387,12 +387,12 @@ def main():
     classifiers = create_classifiers()
 
     # Uncomment to optimise parameters of the classifiers
-    optimise_parameters(classifiers, df)
+    # optimise_parameters(classifiers, df)
 
     vectorizer, classifiers = train_classifiers(df, classifiers)
     cross_val_classifiers(classifiers, df)
 
-    # save_classifiers(classifiers, v)
+    save_classifiers(classifiers, vectorizer)
 
     # classifiers = load_classifiers()
     # v = load_vectorizer()
