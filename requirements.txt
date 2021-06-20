@@ -20,7 +20,7 @@ scikit-learn==0.22
 six==1.15.0
 threadpoolctl==2.1.0
 tqdm==4.50.2
-urllib3==1.25.10
+urllib3==1.26.5
 vaderSentiment==3.3.2
 virtualenv==20.0.35
 virtualenv-clone==0.5.4
