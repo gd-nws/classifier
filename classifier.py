@@ -15,7 +15,7 @@ import time
 import pandas as pd
 import pickle
 import os
-from common import connect_to_db, load_file, filter_stop_words, strip_punctuation, normalise_column
+from common import load_file, filter_stop_words, strip_punctuation, normalise_column, connect_to_mongo_db
 from datetime import datetime
 
 c_name = ['SVM', 'RFR', 'KNN']
@@ -23,40 +23,29 @@ c_name = ['SVM', 'RFR', 'KNN']
 
 def fetch_data_set():
     """
-    Gets all annotated headlines from the server.
+    Gets all annotated headlines.
 
     :return: pandas data frame of annotated headline data.
     """
+    query = {"$or": [{"votes.negative": {"$gt": 1}}, {"votes.positive": {"$gt": 1}}]}
+    db, client = connect_to_mongo_db()
+    results = list(db.Headlines.find(query))
 
-    sql = """
-        SELECT h.id as headline_id,
-               headline,
-               origin,
-               semantic_value,
-               pos,
-               neg,
-               neu,
-               published_at,
-               votes.positive,
-               votes.negative
-        FROM headlines as h
-        JOIN (
-            SELECT sum(a.positive) AS positive,
-                   sum(a.negative) AS negative,
-                   a.headline_id
-            FROM annotations as a
-            GROUP BY a.headline_id
-        ) as votes
-           ON h.id = votes.headline_id
-    """
-    db = connect_to_db()
-    cur = db.cursor()
-    cur.execute(sql)
+    formatted = list(map(lambda h: {
+        "headline_id": str(h["_id"]),
+        "headline": h["origin"],
+        "semantic_value": h["semanticValue"],
+        "origin": h["origin"],
+        "pos": h["pos"],
+        "neg": h["neg"],
+        "neu": h["neu"],
+        "published_at": h["publishedAt"],
+        "positive": h["votes"]["positive"],
+        "negative": h["votes"]["negative"]
+    }, results))
 
-    df = pd.read_sql(sql, con=db)
-    db.close()
-
-    return df
+    client.close()
+    return pd.DataFrame(formatted)
 
 
 def engineer_data_set(df):
@@ -92,7 +81,7 @@ def to_epoch(date_time):
     :param date_time: datetime
     :return: epoch
     """
-    pattern = '%Y-%m-%d'
+    pattern = '%Y-%m-%d %H:%M:%S'
     earliest = datetime(1970, 1, 1, 0, 0, 0, 0)
 
     if date_time is None:
@@ -282,8 +271,6 @@ def cross_val_classifiers(classifiers, df):
                                                                     "Accuracy STD", "Average F1", "F1 STD")
     print(score_header)
 
-    db = connect_to_db()
-
     for clf in classifiers:
         confusion = np.array([[0, 0], [0, 0]])
         for train, test in skf.split(df['headline'], df['truth']):
@@ -315,24 +302,10 @@ def cross_val_classifiers(classifiers, df):
         score_string = "{: <25} {: <25} {: <25} {: <25} {: <25}".format(c_name[i], acc.mean(), acc.std(), f1s.mean(),
                                                                         f1s.std())
 
-        sql = """
-            INSERT INTO classifier_scores 
-                (name, accuracy, accuracy_std, f1, f1_std, data_size) 
-            VALUES 
-                (%s, %s, %s, %s, %s, %s)
-        """
-
-        cursor = db.cursor()
-        cursor.execute(sql, (c_name[i], float(acc.mean()), float(
-            acc.std()), float(f1s.mean()), float(f1s.std()), len(df)))
-        db.commit()
-
         print(score_string)
         print(confusion)
 
         i += 1
-
-    db.close()
 
 
 def save_classifiers(classifiers, vectorizer):
@@ -392,12 +365,12 @@ def main():
     vectorizer, classifiers = train_classifiers(df, classifiers)
     cross_val_classifiers(classifiers, df)
 
-    save_classifiers(classifiers, vectorizer)
+    # save_classifiers(classifiers, vectorizer)
 
-    # classifiers = load_classifiers()
-    # v = load_vectorizer()
+    classifiers = load_classifiers()
+    v = load_vectorizer()
     #
-    # make_prediction(v, df)
+    make_prediction(v, classifiers, df)
 
 
 if __name__ == "__main__":

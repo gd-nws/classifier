@@ -2,7 +2,7 @@
 #               Pull headlines from NewsAPI, and classify them as positive or negative.
 #               Headlines can be printed or persisted.
 
-from common import connect_to_db, normalise_column, to_epoch, load_file, filter_stop_words
+from common import normalise_column, to_epoch, load_file, filter_stop_words, connect_to_mongo_db
 from headline import Headline
 
 import sys
@@ -14,7 +14,7 @@ import string
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import urllib.parse
-from psycopg2.extras import execute_values
+import pymongo
 
 
 def load_classifier(classifier):
@@ -83,52 +83,51 @@ def get_headlines(url):
     return headlines
 
 
-def save_to_db(headlines):
+def save_headlines(headlines):
     """
     Save headlines to database
 
     :param headlines: all headlines
     :return: null
     """
-    db = connect_to_db()
-    cur = db.cursor()
 
-    insert_vals = []
+    print(len(headlines))
+    db, client = connect_to_mongo_db()
 
-    sql = """
-        INSERT INTO good_news.headlines 
-            (
-                headline, 
-                predicted_class, 
-                link, origin, 
-                semantic_value, 
-                hashcode, 
-                published_at, 
-                pos, 
-                neg, 
-                neu, 
-                display_image
-            ) 
-        VALUES %s
-        ON CONFLICT DO NOTHING
-        RETURNING id
-    """
-
+    documents = []
     for h in headlines:
-        insert_vals.append(
-            (h.headline, int(h.predicted_class), h.link, h.origin, h.semantic_value, h.sha256(), h.datetime,
-             h.pos, h.neg, h.neu, h.display_image))
-
-    inserted = []
+        documents.append(
+            {
+                "headline": h.headline,
+                "link": h.link,
+                "origin": h.origin,
+                "hashcode": h.sha256(),
+                "pos": h.pos,
+                "neg": h.neg,
+                "neu": h.neu,
+                "predictedClass": int(h.predicted_class),
+                "semanticValue": h.semantic_value,
+                "publishedAt": datetime.strptime(h.datetime, '%Y-%m-%d'),
+                "displayImage": h.display_image,
+                "createdAt": datetime.now(),
+                "votes": {
+                    "negative": 0,
+                    "positive": 0
+                    },
+                "annotations": []
+            }
+        )
+    
     try:
-        inserted = execute_values(cur, sql, insert_vals, fetch=True)
+        inserted_ids = db.Headlines.insert_many(documents, ordered=False)
+        print("Inserted ids:\n")
+        print(inserted_ids)
+    except pymongo.errors.BulkWriteError as e:
+        print(e.details['writeErrors'])
     except Exception as e:
-        print("ERROR: {}".format(e))
+        raise e
 
-    print("Stored {count} headline(s)".format(count=len(inserted)))
-    db.commit()
-    db.close()
-
+    client.close()
 
 def print_results(headlines):
     """
@@ -260,7 +259,7 @@ def main():
 
     if len(sys.argv) > 1:
         if sys.argv[1] == "--persist":
-            save_to_db(all_headlines)
+            save_headlines(all_headlines)
         elif sys.argv[1] == "--print":
             print_results(all_headlines)
 

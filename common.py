@@ -1,34 +1,30 @@
 import os
-import psycopg2
 from dotenv import load_dotenv
 import time
 import pickle
 from nltk.corpus import stopwords
+from pymongo import MongoClient
 import string
 
 
 load_dotenv()
 s = set(stopwords.words('english'))
 
+def connect_to_mongo_db():
+  """
+  Connect to a mongo database.
 
-def connect_to_db():
-    """
-    Creates a connection to a database.
+  :return: Mongo database connection.
+  """
+  client = MongoClient(os.environ['CONNECTION_STRING'])
 
-    :return: database
-    """
+  # db=client.admin
+  # # Issue the serverStatus command and print the results
+  # serverStatusResult=db.command("serverStatus")
+  # print(serverStatusResult)
 
-    database = os.environ['DATABASE']
-    db_user = os.environ['DB_USER']
-    db_password = os.environ['DB_PASSWORD']
-    db_host = os.environ['DB_HOST']
-    db_port = os.environ['DB_PORT']
-
-    conn = psycopg2.connect(
-        "dbname='{dbName}' user='{user}' host='{host}' password='{password}' port='{port}'"
-        .format(dbName=database, user=db_user, password=db_password, host=db_host, port=db_port))
-
-    return conn
+  db = client.GoodNews
+  return db, client
 
 
 def normalise_column(df, column):
